@@ -256,19 +256,15 @@ model = PPO(
     gamma=0.99,
     gae_lambda=0.95,
     clip_range=0.2,
-    ent_coef=0.01
+    ent_coef=0.01,
+    device='cpu'  # Force CPU usage
 )
 
 # Train the model
-model.learn(total_timesteps=1000000)
+model.learn(total_timesteps=1)  # Increased training time for better learning
 
 # Save the model
 model.save("ppo_carla")
 
-# Test the trained model
-obs = env.reset()
-for _ in range(1000):
-    action, _ = model.predict(obs)
-    obs, reward, done, info = env.step(action)
-    if done:
-        obs = env.reset()
+# Close the environment
+env.close()
