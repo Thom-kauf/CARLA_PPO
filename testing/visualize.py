@@ -6,18 +6,32 @@ import time
 import os
 from stable_baselines3 import PPO
 
-# Import your environment
-from PPO import CarlaEnv
+print("=== CARLA Visualization Script ===")
+print("Checking if CARLA is running...")
+
+# Try to connect to CARLA first
+try:
+    client = carla.Client('localhost', 2000)
+    client.set_timeout(10.0)
+    world = client.get_world()
+    print("✓ Successfully connected to CARLA server")
+except Exception as e:
+    print(f"✗ Failed to connect to CARLA server: {e}")
+    print("Please make sure CARLA is running before starting this script")
+    exit(1)
+
+# Import environment from the new file
+from carla_env import CarlaEnv
 
 def visualize():
-    print("Starting visualization...")
+    print("\n=== Starting Visualization ===")
     
     # Initialize pygame for visualization
     try:
         pygame.init()
-        print("Pygame initialized successfully")
+        print("✓ Pygame initialized")
     except Exception as e:
-        print(f"Error initializing pygame: {e}")
+        print(f"✗ Error initializing pygame: {e}")
         return
     
     # Create a single window with space for both camera and metrics
@@ -25,48 +39,48 @@ def visualize():
         WINDOW_WIDTH = 1200  # 800 for camera + 400 for metrics
         WINDOW_HEIGHT = 600
         display = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("CARLA Visualization")
-        print(f"Window created: {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+        pygame.display.set_caption("CARLA Visualization - Trained Model")
+        print(f"✓ Window created: {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
     except Exception as e:
-        print(f"Error creating window: {e}")
+        print(f"✗ Error creating window: {e}")
         return
 
     font = pygame.font.Font(None, 36)
-    print("Font loaded")
+    print("✓ Font loaded")
 
     # Create environment
     try:
+        print("Attempting to create CARLA environment...")
         env = CarlaEnv()
-        print("Environment created successfully")
+        print("✓ Environment created")
     except Exception as e:
-        print(f"Error creating environment: {e}")
+        print(f"✗ Error creating environment: {e}")
         pygame.quit()
         return
     
-    # Load the trained model if it exists
-    model_path = "ppo_carla"
-    if os.path.exists(model_path + ".zip"):
-        try:
-            model = PPO.load(model_path)
-            print("Model loaded successfully")
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            model = None
-    else:
-        model = None
-        print("No trained model found, using random actions")
+    # Load the trained model
+    try:
+        print("Attempting to load trained model...")
+        model = PPO.load("ppo_carla")
+        print("✓ Model loaded")
+    except Exception as e:
+        print(f"✗ Error loading model: {e}")
+        pygame.quit()
+        env.close()
+        return
 
     try:
+        print("Resetting environment...")
         obs, info = env.reset()
-        print("Environment reset successfully")
+        print("✓ Environment reset")
     except Exception as e:
-        print(f"Error resetting environment: {e}")
+        print(f"✗ Error resetting environment: {e}")
         pygame.quit()
         env.close()
         return
 
     running = True
-    print("Starting main loop...")
+    print("\n=== Starting Main Loop ===")
     
     while running:
         try:
@@ -76,11 +90,8 @@ def visualize():
                     running = False
                     print("Quit event received")
             
-            # Get action from model or random
-            if model is not None:
-                action, _ = model.predict(obs, deterministic=True)
-            else:
-                action = env.action_space.sample()
+            # Get action from trained model
+            action, _ = model.predict(obs, deterministic=True)
             
             # Step environment
             obs, reward, terminated, truncated, info = env.step(action)
@@ -105,7 +116,8 @@ def visualize():
                 f"Lane Offset: {info['lane_offset']:.2f} m",
                 f"Angle: {info['angle']:.2f} rad",
                 f"Collision: {info['collision']}",
-                f"Action: [{action[0]:.2f}, {action[1]:.2f}, {action[2]:.2f}]"
+                f"Action: [{action[0]:.2f}, {action[1]:.2f}, {action[2]:.2f}]",
+                f"Reward: {reward:.2f}"
             ]
             
             for i, metric in enumerate(metrics):
@@ -124,11 +136,10 @@ def visualize():
             print(f"Error in main loop: {e}")
             running = False
     
-    print("Cleaning up...")
+    print("\n=== Cleaning Up ===")
     pygame.quit()
     env.close()
     print("Visualization ended")
 
 if __name__ == "__main__":
-    print("Starting visualization script...")
     visualize() 

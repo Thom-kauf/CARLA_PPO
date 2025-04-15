@@ -1,10 +1,7 @@
 import gymnasium as gym
 import numpy as np
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.env_checker import check_env
 import carla
-import torch
+
 class CarlaEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 30}
     
@@ -26,15 +23,7 @@ class CarlaEnv(gym.Env):
             dtype=np.float32
         )
         
-        # # Define observation space (you'll need to customize this based on your sensors)
-        # self.observation_space = gym.spaces.Box(
-        #     low=-np.inf,
-        #     high=np.inf,
-        #     shape=(4,),  # Example: [speed, distance_to_center, angle, collision]
-        #     dtype=np.float32
-        # )
-
-        # [speed, lane offset, angle, collision]
+        # Define observation space
         self.observation_space = gym.spaces.Box(
             low = np.array([0.0, -10.0, -np.pi, 0.0]),
             high = np.array([50.0, 10.0, np.pi, 1.0]),
@@ -50,25 +39,26 @@ class CarlaEnv(gym.Env):
         self.current_step = 0
         self.max_steps = 500
         self.target_location = None
+        self.lane_departures = 0
 
     def _get_obs(self):
-        transform = self.vehicle.get_transform() # returns the location and rotation 
+        transform = self.vehicle.get_transform()
         velocity = self.vehicle.get_velocity()
 
-        speed = np.linalg.norm([velocity.x, velocity.y, velocity.z]) * 3.6 # m/s to km/h
+        speed = np.linalg.norm([velocity.x, velocity.y, velocity.z]) * 3.6  # m/s to km/h
 
         location = transform.location
-        waypoint = self.world.get_map().get_waypoint(location, project_to_road=True, lane_type=carla.LaneType.Driving) # dot along the middle of the lane
+        waypoint = self.world.get_map().get_waypoint(location, project_to_road=True, lane_type=carla.LaneType.Driving)
 
         lane_center = waypoint.transform.location
-        lane_offset = location.distance(lane_center) # how far we are from the center of the lane
+        lane_offset = location.distance(lane_center)
 
         vehicle_forward = transform.get_forward_vector()
         lane_forward = waypoint.transform.get_forward_vector()
 
         dot_value = vehicle_forward.x * lane_forward.x + vehicle_forward.y * lane_forward.y + vehicle_forward.z * lane_forward.z
         dot_product = np.clip(dot_value, -1.0, 1.0)
-        angle = np.arccos(dot_product) # how well we are aligned with the lane
+        angle = np.arccos(dot_product)
 
         collision = float(self.collision_occured)
 
@@ -119,7 +109,7 @@ class CarlaEnv(gym.Env):
         return obs, reward, terminated, truncated, info
         
     def reset(self, seed=None, options=None):
-        super().reset(seed=seed)  # Initialize RNG state
+        super().reset(seed=seed)
         
         # Clean up previous episode
         self.cleanup()
@@ -150,11 +140,8 @@ class CarlaEnv(gym.Env):
     
     def _add_collision_sensor(self):
         blueprint_library = self.world.get_blueprint_library()
-
         collision_bp = blueprint_library.find('sensor.other.collision')
-
         sensor_transform = carla.Transform()
-
         self.collision_sensor = self.world.spawn_actor(
             collision_bp,
             sensor_transform,
@@ -165,7 +152,6 @@ class CarlaEnv(gym.Env):
             self.collision_occured = True
         
         self.collision_sensor.listen(_on_collision)
-
         self.sensors.append(self.collision_sensor)
 
     def _add_camera_sensor(self):
@@ -222,7 +208,7 @@ class CarlaEnv(gym.Env):
         vehicles = actors.filter("vehicle.*")
         for vehicle in vehicles:
             try:
-                if vehicle.is_alive:  # Changed from is_alive() to is_alive
+                if vehicle.is_alive:
                     vehicle.destroy()
             except:
                 pass
@@ -230,41 +216,7 @@ class CarlaEnv(gym.Env):
         sensors = actors.filter("sensor.*")
         for sensor in sensors:
             try:
-                if sensor.is_alive:  # Changed from is_alive() to is_alive
+                if sensor.is_alive:
                     sensor.destroy()
             except:
-                pass
-
-# Create and wrap environment
-env = CarlaEnv()
-
-# Check if environment follows gym interface
-check_env(env)
-
-# Create vectorized environment
-env = DummyVecEnv([lambda: env])
-
-# Initialize PPO model
-model = PPO(
-    "MlpPolicy",
-    env,
-    verbose=1,
-    learning_rate=0.0003,
-    n_steps=4096,
-    batch_size=128,
-    n_epochs=10,
-    gamma=0.99,
-    gae_lambda=0.95,
-    clip_range=0.2,
-    ent_coef=0.01,
-    device='cpu',#device='cuda' if torch.cuda.is_available() else 'cpu'  # Use GPU if available, otherwise CPU
-)
-
-# Train the model
-model.learn(total_timesteps=500_000)  
-
-# Save the model
-model.save("ppo_carla")
-
-# Close the environment
-env.close()
+                pass 
