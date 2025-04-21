@@ -5,6 +5,7 @@ import pygame
 import time
 import os
 from stable_baselines3 import PPO
+import torch
 
 print("=== CARLA Visualization Script ===")
 print("Checking if CARLA is running...")
@@ -51,8 +52,9 @@ def visualize():
     # Create environment
     try:
         print("Attempting to create CARLA environment...")
-        env = CarlaEnv()
-        print("✓ Environment created")
+        # Disable boost for visualization/evaluation
+        env = CarlaEnv(disable_boost=True, initial_throttle=0.3)
+        print("✓ Environment created (boost disabled for evaluation)")
     except Exception as e:
         print(f"✗ Error creating environment: {e}")
         pygame.quit()
@@ -61,10 +63,39 @@ def visualize():
     # Load the trained model
     try:
         print("Attempting to load trained model...")
-        model = PPO.load("ppo_carla")
-        print("✓ Model loaded")
+        try:
+            model = PPO.load("ppo_carla", env=env)  # Pass env to ensure observation space matches
+            print("✓ Model loaded successfully with new observation space")
+        except Exception as load_error:
+            print(f"Warning: Could not load existing model ({load_error})")
+            print("Creating new model with correct observation space...")
+            # Create a new model with the same architecture as in PPO.py
+            policy_kwargs = dict(
+                activation_fn=torch.nn.Tanh,
+                net_arch=dict(
+                    pi=[256, 256],
+                    vf=[256, 256]
+                ),
+                ortho_init=True
+            )
+            model = PPO(
+                "MlpPolicy",
+                env,
+                verbose=1,
+                learning_rate=3e-4,
+                n_steps=2048,
+                batch_size=64,
+                n_epochs=10,
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_range=0.2,
+                ent_coef=0.01,
+                policy_kwargs=policy_kwargs,
+                device='cpu'
+            )
+            print("✓ New model created")
     except Exception as e:
-        print(f"✗ Error loading model: {e}")
+        print(f"✗ Error setting up model: {e}")
         pygame.quit()
         env.close()
         return
@@ -86,7 +117,7 @@ def visualize():
     current_trial = 0
     max_trials = 10
     steps_in_current_trial = 0
-    max_steps_per_trial = 2000
+    max_steps_per_trial = 10_000
     reward_threshold = 5.0
     
     while running and current_trial < max_trials:
@@ -102,8 +133,8 @@ def visualize():
             action = np.clip(action, env.action_space.low, env.action_space.high)
             # Step environment
             obs, reward, terminated, truncated, info = env.step(action)
-            print(f"Clipped action: steer={action[0]:.3f}, throttle={action[1]:.3f}, brake={action[2]:.3f} | "
-                    f"Speed: {info['speed']:.2f} km/h | Reward: {reward:.2f}")
+            # print(f"Clipped action: steer={action[0]:.3f}, throttle={action[1]:.3f}, brake={action[2]:.3f} | "
+            #         f"Speed: {info['speed']:.2f} km/h | Reward: {reward:.2f}")
             steps_in_current_trial += 1
             
             # Clear the display
@@ -128,13 +159,48 @@ def visualize():
                 f"Lane Offset: {info['lane_offset']:.2f} m",
                 f"Angle: {info['angle']:.2f} rad",
                 f"Collision: {info['collision']}",
+                f"Distance to Target: {info['distance_to_target']:.2f} m",
+                f"Target Angle: {np.degrees(info['target_angle']):.1f}°",
+                f"Progress: {info.get('progress', 0):.3f} m",
                 f"Action: [{action[0]:.2f}, {action[1]:.2f}, {action[2]:.2f}]",
-                f"Reward: {reward:.2f}"
+                f"Total Reward: {reward:.2f}"
             ]
             
             for i, metric in enumerate(metrics):
                 text = font.render(metric, True, (255, 255, 255))
                 display.blit(text, (820, 10 + i * 30))  # Metrics start at x=820
+            
+            # Display reward breakdown
+            reward_breakdown = [
+                f"Progress Reward: {info.get('progress_reward', 0):.2f}",
+                f"Speed Reward: {info.get('speed_reward', 0):.2f}",
+                f"Direction Reward: {info.get('direction_reward', 0):.2f}",
+                f"Movement Penalty: {info.get('movement_penalty', 0):.2f}",
+                f"Collision Penalty: {info.get('collision_penalty', 0):.2f}",
+                f"Lane Penalty: {info.get('lane_departure_penalty', 0):.2f}"
+            ]
+            
+            # Draw target direction indicator
+            if camera_img is not None:
+                # Calculate arrow endpoint based on target angle
+                center_x = 400  # Center of camera view
+                center_y = 500  # Near bottom of camera view
+                arrow_length = 50
+                target_angle = info['target_angle']
+                
+                # Calculate arrow endpoint
+                end_x = center_x + arrow_length * np.cos(-target_angle)  # Negative angle because pygame y is inverted
+                end_y = center_y - arrow_length * np.sin(-target_angle)
+                
+                # Draw arrow
+                pygame.draw.line(display, (0, 255, 0), (center_x, center_y), (end_x, end_y), 3)
+                # Draw arrowhead
+                pygame.draw.circle(display, (0, 255, 0), (int(end_x), int(end_y)), 5)
+            
+            # Display reward components in yellow below main metrics
+            for i, reward_text in enumerate(reward_breakdown):
+                text = font.render(reward_text, True, (255, 200, 0))  # Yellow color
+                display.blit(text, (820, 320 + i * 30))  # Start below main metrics
             
             pygame.display.flip()
             
