@@ -2,10 +2,12 @@ import gymnasium as gym
 import numpy as np
 import carla
 import pygame
-import time
 import os
 from stable_baselines3 import PPO
-import torch
+import matplotlib.pyplot as plt
+import argparse
+import cv2
+
 
 print("=== CARLA Visualization Script ===")
 print("Checking if CARLA is running...")
@@ -22,7 +24,85 @@ except Exception as e:
     exit(1)
 
 # Import environment from the new file
-from carla_env import CarlaEnv
+from carla_env_lane_departure import CarlaEnv
+from anxious_carla import CarlaEnv as AnxiousCarlaEnv
+
+
+
+def generate_visualizations(collision_list, lane_departure_list, completion_rate_list, distance_list, reward_list, progress_list, speed_list, filepath):
+
+    # Create a figure for the reward breakdown
+    plt.figure(figsize=(10, 5))
+    plt.plot(reward_list)
+    plt.title('Total Reward per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Reward')
+    plt.savefig(filepath + 'reward_plot.png')
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(distance_list)
+    plt.title('Final Distance to Target')
+    plt.xlabel('Episode')
+    plt.ylabel('Distance (m)')
+    plt.savefig(filepath + 'distance_plot.png')
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(progress_list)
+    plt.title('Cumulative Progress per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Total Progress (m)')
+    plt.grid(True)
+    plt.savefig(filepath + 'progress_plot.png')
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(speed_list)
+    plt.title('Average Speed per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Speed (km/h)')
+    plt.grid(True)
+    plt.savefig(filepath + 'speed_plot.png')
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(lane_departure_list)
+    plt.title('Lane Departures per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Count')
+    plt.savefig(filepath + 'lane_departure_plot.png')
+
+    plt.figure(figsize=(10, 5))
+    plt.bar(range(len(collision_list)), [1 if c else 0 for c in collision_list])
+    plt.title('Collisions per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Collision (1=Yes, 0=No)')
+    plt.yticks([0, 1])
+    plt.savefig(filepath + 'collision_plot.png')
+
+    plt.figure(figsize=(10, 5))
+    plt.bar(range(len(completion_rate_list)), [1 if c else 0 for c in completion_rate_list])
+    plt.title('Route Completion per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Completed (1=Yes, 0=No)')
+    plt.yticks([0, 1])
+    plt.savefig(filepath + 'completion_rate_plot.png')
+    
+    # Summary statistics
+    completion_percentage = sum([1 if c else 0 for c in completion_rate_list]) / len(completion_rate_list) * 100
+    collision_percentage = sum([1 if c else 0 for c in collision_list]) / len(collision_list) * 100
+    avg_distance = sum(distance_list) / len(distance_list)
+    avg_reward = sum(reward_list) / len(reward_list)
+    
+    # Save summary to file
+    with open(filepath + 'summary.txt', 'w') as f:
+        f.write(f"Summary Statistics:\n")
+        f.write(f"Total Episodes: {len(reward_list)}\n")
+        f.write(f"Route Completion Rate: {completion_percentage:.1f}%\n")
+        f.write(f"Collision Rate: {collision_percentage:.1f}%\n")
+        f.write(f"Average Final Distance to Target: {avg_distance:.2f}m\n")
+        f.write(f"Average Episode Reward: {avg_reward:.2f}\n")
+        f.write(f"Average Lane Departures: {sum(lane_departure_list)/len(lane_departure_list):.2f}\n")
+
+
+
 
 def visualize():
     print("\n=== Starting Visualization ===")
@@ -52,9 +132,21 @@ def visualize():
     # Create environment
     try:
         print("Attempting to create CARLA environment...")
-        # Disable boost for visualization/evaluation
-        env = CarlaEnv(disable_boost=True, initial_throttle=0.3)
-        print("✓ Environment created (boost disabled for evaluation)")
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--anxious', action='store_true',
+                            help='Use AnxiousCarlaEnv instead of CarlaEnv')
+        parser.add_argument('--model_path', type=str, default="ppo_carla",
+                          help='Path to load the trained model (without .zip extension)')
+        parser.add_argument('--record', action='store_true',
+                          help='Record the visualization to a video file')
+        parser.add_argument('--subfolder', type=str, required=True,
+                        help='Subfolder within ./visualizations to save outputs')
+        parser.add_argument('--video_name', type=str, default='visualization.avi',
+                        help='Name of the video file to save')
+        args = parser.parse_args()
+        env_class = AnxiousCarlaEnv if args.anxious else CarlaEnv
+        env = env_class()
+        print("✓ Environment created")
     except Exception as e:
         print(f"✗ Error creating environment: {e}")
         pygame.quit()
@@ -63,39 +155,11 @@ def visualize():
     # Load the trained model
     try:
         print("Attempting to load trained model...")
-        try:
-            model = PPO.load("ppo_carla", env=env)  # Pass env to ensure observation space matches
-            print("✓ Model loaded successfully with new observation space")
-        except Exception as load_error:
-            print(f"Warning: Could not load existing model ({load_error})")
-            print("Creating new model with correct observation space...")
-            # Create a new model with the same architecture as in PPO.py
-            policy_kwargs = dict(
-                activation_fn=torch.nn.Tanh,
-                net_arch=dict(
-                    pi=[256, 256],
-                    vf=[256, 256]
-                ),
-                ortho_init=True
-            )
-            model = PPO(
-                "MlpPolicy",
-                env,
-                verbose=1,
-                learning_rate=3e-4,
-                n_steps=2048,
-                batch_size=64,
-                n_epochs=10,
-                gamma=0.99,
-                gae_lambda=0.95,
-                clip_range=0.2,
-                ent_coef=0.01,
-                policy_kwargs=policy_kwargs,
-                device='cpu'
-            )
-            print("✓ New model created")
+        model = PPO.load(args.model_path, env=env, device='cpu')  # Explicitly set device to CPU
+        print("✓ Model loaded successfully")
     except Exception as e:
-        print(f"✗ Error setting up model: {e}")
+        print(f"✗ Error loading model: {e}")
+        print("Exiting visualization - trained model required")
         pygame.quit()
         env.close()
         return
@@ -115,11 +179,35 @@ def visualize():
     
     # Track trial information
     current_trial = 0
-    max_trials = 10
+    max_trials = 5
     steps_in_current_trial = 0
     max_steps_per_trial = 10_000
-    reward_threshold = 5.0
     
+    
+    collision_list = []
+    lane_departure_list = []
+    completion_rate_list = []
+    distance_list = []
+    reward_list = []
+    progress_list = []
+    speed_list = []
+
+    total_episode_reward = 0
+    total_episode_progress = 0
+    episode_speeds = []
+
+    # Construct the full output directory path
+    output_dir = os.path.join('./visualizations', args.subfolder)
+
+    # Set up video recording if --record is passed
+    if args.record:
+        video_file_path = os.path.join(output_dir, args.video_name)
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        video_out = cv2.VideoWriter(video_file_path, fourcc, 30.0, (WINDOW_WIDTH, WINDOW_HEIGHT))
+
+    # Create visualizations directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
     while running and current_trial < max_trials:
         try:
             # Process pygame events
@@ -127,14 +215,16 @@ def visualize():
                 if event.type == pygame.QUIT:
                     running = False
                     print("Quit event received")
-            
+
             # Get action from trained model
             action, _ = model.predict(obs, deterministic=True)
-            action = np.clip(action, env.action_space.low, env.action_space.high)
             # Step environment
             obs, reward, terminated, truncated, info = env.step(action)
-            # print(f"Clipped action: steer={action[0]:.3f}, throttle={action[1]:.3f}, brake={action[2]:.3f} | "
-            #         f"Speed: {info['speed']:.2f} km/h | Reward: {reward:.2f}")
+
+            # Track metrics
+            total_episode_reward += reward
+            total_episode_progress += info.get('immediate_progress', 0)
+            episode_speeds.append(info.get('speed', 0))
             steps_in_current_trial += 1
             
             # Clear the display
@@ -154,70 +244,83 @@ def visualize():
             # Render metrics (on the right side)
             metrics = [
                 f"Trial: {current_trial + 1}/{max_trials}",
-                f"Steps: {steps_in_current_trial}/{max_steps_per_trial}",
+                f"Steps: {steps_in_current_trial}",
                 f"Speed: {info['speed']:.2f} km/h",
                 f"Lane Offset: {info['lane_offset']:.2f} m",
-                f"Angle: {info['angle']:.2f} rad",
-                f"Collision: {info['collision']}",
                 f"Distance to Target: {info['distance_to_target']:.2f} m",
+                f"Immediate Progress: {info.get('immediate_progress', 0):.3f} m",
+                f"Average Progress: {info.get('average_progress', 0):.3f} m",
+                f"Total Buffer Progress: {info.get('total_buffer_progress', 0):.3f} m",
+                f"Total Progress: {total_episode_progress:.3f} m",
                 f"Target Angle: {np.degrees(info['target_angle']):.1f}°",
-                f"Progress: {info.get('progress', 0):.3f} m",
-                f"Action: [{action[0]:.2f}, {action[1]:.2f}, {action[2]:.2f}]",
-                f"Total Reward: {reward:.2f}"
+
+                f"Throttle: {info['throttle']:.2f}",
+
+                f"Brake: {round(info['brake'] if info['throttle'] < 0.1 else 0.0, 2)}",
+                f"Steering: {info['steer']:.2f}",
+                f"Total Episode Reward: {total_episode_reward:.2f}"
             ]
             
             for i, metric in enumerate(metrics):
                 text = font.render(metric, True, (255, 255, 255))
                 display.blit(text, (820, 10 + i * 30))  # Metrics start at x=820
             
-            # Display reward breakdown
-            reward_breakdown = [
-                f"Progress Reward: {info.get('progress_reward', 0):.2f}",
-                f"Speed Reward: {info.get('speed_reward', 0):.2f}",
-                f"Direction Reward: {info.get('direction_reward', 0):.2f}",
-                f"Movement Penalty: {info.get('movement_penalty', 0):.2f}",
-                f"Collision Penalty: {info.get('collision_penalty', 0):.2f}",
-                f"Lane Penalty: {info.get('lane_departure_penalty', 0):.2f}"
-            ]
-            
-            # Draw target direction indicator
-            if camera_img is not None:
-                # Calculate arrow endpoint based on target angle
-                center_x = 400  # Center of camera view
-                center_y = 500  # Near bottom of camera view
-                arrow_length = 50
-                target_angle = info['target_angle']
-                
-                # Calculate arrow endpoint
-                end_x = center_x + arrow_length * np.cos(-target_angle)  # Negative angle because pygame y is inverted
-                end_y = center_y - arrow_length * np.sin(-target_angle)
-                
-                # Draw arrow
-                pygame.draw.line(display, (0, 255, 0), (center_x, center_y), (end_x, end_y), 3)
-                # Draw arrowhead
-                pygame.draw.circle(display, (0, 255, 0), (int(end_x), int(end_y)), 5)
-            
-            # Display reward components in yellow below main metrics
-            for i, reward_text in enumerate(reward_breakdown):
-                text = font.render(reward_text, True, (255, 200, 0))  # Yellow color
-                display.blit(text, (820, 320 + i * 30))  # Start below main metrics
-            
             pygame.display.flip()
-            
+
+            # Capture the frame from the Pygame window if recording
+            if args.record:
+                frame = np.array(pygame.surfarray.array3d(display))
+                frame = np.transpose(frame, (1, 0, 2))  # Transpose to match OpenCV format
+                video_out.write(frame)
+
             # Check if we should start a new trial
-            if (terminated or truncated or 
-                (steps_in_current_trial >= max_steps_per_trial and reward < reward_threshold)):
-                print(f"Trial {current_trial + 1} ended. Steps: {steps_in_current_trial}, Final Reward: {reward:.2f}")
+            if terminated or truncated or (steps_in_current_trial >= max_steps_per_trial):
+                print(f"Trial {current_trial + 1} ended. Steps: {steps_in_current_trial}")
+                print(f"  Final distance: {info['distance_to_target']:.2f}m")
+                print(f"  Total progress: {total_episode_progress:.2f}m")
+                print(f"  Total reward: {total_episode_reward:.2f}")
+                
+                # append to lists 
+                collision_list.append(info.get('collision', False))
+                lane_departure_list.append(info.get('lane_departures', 0))
+                completion_rate_list.append(info.get('route_complete', False))
+                
+                distance_list.append(info.get('distance_to_target', 0))
+                reward_list.append(total_episode_reward)
+                progress_list.append(total_episode_progress)
+                speed_list.append(sum(episode_speeds) / len(episode_speeds) if episode_speeds else 0)
+                
+                # Reset for next episode
                 current_trial += 1
                 steps_in_current_trial = 0
+                total_episode_reward = 0
+                total_episode_progress = 0
+                episode_speeds = []
                 obs, info = env.reset()
-            
-            # time.sleep(0.1)  # Small delay to make visualization smoother
-            
+
         except Exception as e:
             print(f"Error in main loop: {e}")
             running = False
-    
+
+    # Release the video writer if recording
+    if args.record:
+        video_out.release()
+        print(f"Video saved to: {video_file_path}")
+
+    # Generate visualizations with proper path joining
+    generate_visualizations(
+        collision_list, 
+        lane_departure_list, 
+        completion_rate_list, 
+        distance_list, 
+        reward_list, 
+        progress_list, 
+        speed_list, 
+        os.path.join(output_dir, '')
+    )
+
+    print("Visualizations saved to:", output_dir)
+
     print("\n=== Cleaning Up ===")
     pygame.quit()
     env.close()
