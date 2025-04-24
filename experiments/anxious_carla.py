@@ -165,7 +165,7 @@ class CarlaEnv(gym.Env):
         collision_penalty = -1_000.0 if collision_occured else 0.0
         
 
-        lane_departure_penalty = -100.0 * lane_offset
+        lane_departure_penalty = -1000.0 * lane_offset
 
         if abs(lane_offset) > 2.0:
             self.lane_departures += 1

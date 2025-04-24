@@ -179,7 +179,7 @@ def visualize():
     
     # Track trial information
     current_trial = 0
-    max_trials = 5
+    max_trials = 1
     steps_in_current_trial = 0
     max_steps_per_trial = 10_000
     

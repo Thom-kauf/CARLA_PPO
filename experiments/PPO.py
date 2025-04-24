@@ -23,7 +23,7 @@ def main():
                        help='Path to load existing model for further training')
     parser.add_argument('--save_path', type=str, default="ppo_carla",
                        help='Path to save the trained model')
-    parser.add_argument('--learning_rate', type=float, default=3e-4,
+    parser.add_argument('--learning_rate', type=float, default=1e-4,
                        help='Learning rate (default: 0.0003)')
     parser.add_argument('--anxious', action='store_true',
                        help='Use AnxiousCarlaEnv instead of CarlaEnv')
@@ -58,13 +58,13 @@ def main():
             env,
             verbose=1,
             learning_rate=args.learning_rate,
-            n_steps=2048,          # Increased for better learning
-            batch_size=64,
+            n_steps=4096,          # Increased for better learning
+            batch_size=256,
             n_epochs=10,
             gamma=0.99,            # Standard discount factor
             gae_lambda=0.95,       # GAE lambda parameter
             clip_range=0.2,        # Standard PPO clip range
-            ent_coef=0.01,         # Reduced for more exploitation
+            ent_coef=0.1,         # Reduced for more exploitation
             policy_kwargs=policy_kwargs,
             device='cpu'
         )

@@ -50,16 +50,14 @@ class CarlaEnv(gym.Env):
         self.target_location = None
         self.lane_departures = 0
 
-        self.progress_buffer_size = 50  # Track progress over last 10 frames
+        self.progress_buffer_size = 500  # Track progress over last 10 frames
         self.progress_buffer = []
         self.distance_buffer = []
 
 
-
-
-
-
-
+        # maybe add this
+        # self.previous_locations_buffer_size = 500
+        # self.previous_locations_buffer = []
 
 
 
@@ -118,6 +116,7 @@ class CarlaEnv(gym.Env):
     def step(self, action):
 
         self.current_step += 1
+
         # Execute action in CARLA
         if self.vehicle is not None:
             control = carla.VehicleControl()
@@ -154,43 +153,41 @@ class CarlaEnv(gym.Env):
         
         # Calculate progress reward using both immediate and buffered progress
         if avg_progress > 0:  # Consistent progress towards goal
-            progress_reward = avg_progress * 1000.0 + total_progress * 500.0
+            progress_reward = avg_progress * 100.0 + total_progress * 50.0
         else:  # Moving away from goal
             progress_reward = avg_progress * 100.0
 
         # Direction reward based on target angle
-        # direction_reward = np.cos(target_angle) * 1000.0  # Max 20 when facing target
+        direction_reward = np.cos(target_angle) * 50.0  # Max 20 when facing target
 
-        # Penalties
-        collision_penalty = -1_000.0 if collision_occured else 0.0
-        
+        lane_departure = False
         if abs(lane_offset) > 2.0:
-            lane_departure_penalty = -500.0
+            lane_departure = True
             self.lane_departures += 1
+
+        reward = 0.0
+        time_penalty = -0.5
+
+        if collision_occured or lane_departure:
+            reward = -10_000.0
         else:
-            lane_departure_penalty = 0.0
+            reward = progress_reward + direction_reward 
 
-
-        # Total reward
-        reward = progress_reward  + collision_penalty + lane_departure_penalty #+ direction_reward
+        reward += time_penalty
 
 
         # Check if episode is terminated
         route_complete = distance_to_target < 5.0
         stuck = self.current_step > 5_000 and speed < 0.1  # Terminate if not moving after 500 steps
 
-        terminated = bool(collision_occured or route_complete)
-        # if not isinstance(terminated, bool):
-        #     print(f"\n\n\n\n\n\n\n\n\nWARNING: terminated is not a bool! Type: {type(terminated)}, value: {terminated}")
+        terminated = bool(collision_occured  or route_complete)
         truncated = stuck
 
         info = {
             "speed": speed,
             "lane_offset": lane_offset,
-            "angle": angle,
-            "collision": collision_occured,
             "lane_departures": self.lane_departures,
-            "route_complete": route_complete,
+            "collision": collision_occured,
             "throttle": float((action[1] + 1) / 2),
             "brake": float((action[2] + 1) / 2),
             "steer": float(action[0]),
@@ -200,9 +197,9 @@ class CarlaEnv(gym.Env):
             "average_progress": avg_progress,
             "total_buffer_progress": total_progress,
             "progress_reward": progress_reward,
-            #"direction_reward": direction_reward,
-            "collision_penalty": collision_penalty,
-            "lane_departure_penalty": lane_departure_penalty,
+            "direction_reward": direction_reward,
+            "route_complete": route_complete,
+            "time_penalty": time_penalty,
             "total_reward": reward
         }
         
@@ -261,10 +258,6 @@ class CarlaEnv(gym.Env):
         )
         
         self.previous_distance = spawn_loc.distance(self.target_location)
-
-        # Debugging information
-        vehicle_transform = self.vehicle.get_transform()
-        vehicle_forward = vehicle_transform.get_forward_vector()
         
         # Add sensors
         self._add_collision_sensor()
