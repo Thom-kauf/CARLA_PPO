@@ -7,7 +7,7 @@ from stable_baselines3 import PPO
 import matplotlib.pyplot as plt
 import argparse
 import cv2
-
+from carla_envs import CarlaEnvVanilla, AnxiousCarlaEnv
 
 print("=== CARLA Visualization Script ===")
 print("Checking if CARLA is running...")
@@ -22,11 +22,6 @@ except Exception as e:
     print(f"✗ Failed to connect to CARLA server: {e}")
     print("Please make sure CARLA is running before starting this script")
     exit(1)
-
-# Import environment from the new file
-from carla_env_lane_departure import CarlaEnv
-from anxious_carla import CarlaEnv as AnxiousCarlaEnv
-
 
 
 def generate_visualizations(collision_list, lane_departure_list, completion_rate_list, distance_list, reward_list, progress_list, speed_list, filepath):
@@ -144,7 +139,7 @@ def visualize():
         parser.add_argument('--video_name', type=str, default='visualization.avi',
                         help='Name of the video file to save')
         args = parser.parse_args()
-        env_class = AnxiousCarlaEnv if args.anxious else CarlaEnv
+        env_class = AnxiousCarlaEnv if args.anxious else CarlaEnvVanilla
         env = env_class()
         print("✓ Environment created")
     except Exception as e:
@@ -179,7 +174,7 @@ def visualize():
     
     # Track trial information
     current_trial = 0
-    max_trials = 1
+    num_trials = 10
     steps_in_current_trial = 0
     max_steps_per_trial = 10_000
     
@@ -197,7 +192,7 @@ def visualize():
     episode_speeds = []
 
     # Construct the full output directory path
-    output_dir = os.path.join('./visualizations', args.subfolder)
+    output_dir = os.path.join('.\\visualizations', args.subfolder)
 
     # Set up video recording if --record is passed
     if args.record:
@@ -208,7 +203,7 @@ def visualize():
     # Create visualizations directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
-    while running and current_trial < max_trials:
+    while running and current_trial < num_trials:
         try:
             # Process pygame events
             for event in pygame.event.get():
@@ -243,7 +238,7 @@ def visualize():
             
             # Render metrics (on the right side)
             metrics = [
-                f"Trial: {current_trial + 1}/{max_trials}",
+                f"Trial: {current_trial + 1}/{num_trials}",
                 f"Steps: {steps_in_current_trial}",
                 f"Speed: {info['speed']:.2f} km/h",
                 f"Lane Offset: {info['lane_offset']:.2f} m",
@@ -265,6 +260,79 @@ def visualize():
                 text = font.render(metric, True, (255, 255, 255))
                 display.blit(text, (820, 10 + i * 30))  # Metrics start at x=820
             
+
+
+
+
+
+            # Draw waypoints if available
+            try:
+                # Draw the reference waypoint
+                if hasattr(env, 'reference_waypoint'):
+                    world.debug.draw_point(
+                        env.reference_waypoint.transform.location,
+                        size=0.2,
+                        color=carla.Color(r=0, g=255, b=0),  # green
+                        life_time=0.1
+                    )
+
+                # Draw the target waypoint
+                if hasattr(env, 'target_waypoint'):
+                    world.debug.draw_point(
+                        env.target_waypoint.transform.location,
+                        size=0.3,
+                        color=carla.Color(r=255, g=0, b=0),  # red
+                        life_time=0.1
+                    )
+                
+                # Draw intermediate route waypoints if available
+                if hasattr(env, 'route'):
+                    for wp in env.route:
+                        world.debug.draw_point(
+                            wp.transform.location,
+                            size=0.1,
+                            color=carla.Color(r=0, g=0, b=255),  # blue
+                            life_time=0.1
+                        )
+
+            except Exception as e:
+                print(f"Error drawing waypoints: {e}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             pygame.display.flip()
 
             # Capture the frame from the Pygame window if recording
