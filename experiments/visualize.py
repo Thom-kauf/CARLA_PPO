@@ -7,7 +7,7 @@ from stable_baselines3 import PPO
 import matplotlib.pyplot as plt
 import argparse
 import cv2
-from carla_envs import CarlaEnvVanilla, AnxiousCarlaEnv
+from carla_envs import CarlaEnvVanilla#, AnxiousCarlaEnv
 
 print("=== CARLA Visualization Script ===")
 print("Checking if CARLA is running...")
@@ -243,12 +243,13 @@ def visualize():
                 f"Speed: {info['speed']:.2f} km/h",
                 f"Lane Offset: {info['lane_offset']:.2f} m",
                 f"Distance to Target: {info['distance_to_target']:.2f} m",
-                f"Immediate Progress: {info.get('immediate_progress', 0):.3f} m",
-                f"Average Progress: {info.get('average_progress', 0):.3f} m",
-                f"Total Buffer Progress: {info.get('total_buffer_progress', 0):.3f} m",
-                f"Total Progress: {total_episode_progress:.3f} m",
+                # f"Immediate Progress: {info.get('immediate_progress', 0):.3f} m",
+                # f"Average Progress: {info.get('average_progress', 0):.3f} m",
+                # f"Total Buffer Progress: {info.get('total_buffer_progress', 0):.3f} m",
+                # f"Total Progress: {100 - :.3f} m",
                 f"Target Angle: {np.degrees(info['target_angle']):.1f}°",
-
+                f"Waypoint Reached: {info['waypoint_reached']}",
+                f"Distance to Waypoint: {info['distance to waypoint']:.2f} m",
                 f"Throttle: {info['throttle']:.2f}",
 
                 f"Brake: {round(info['brake'] if info['throttle'] < 0.1 else 0.0, 2)}",
