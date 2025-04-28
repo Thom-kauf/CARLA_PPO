@@ -11,10 +11,10 @@ class CarlaEnvVanilla(gym.Env):
         
         # Settings
         self.lane_departure_penalty = -0.01#-0.005
-        self.collision_penalty = -1500.0
+        self.collision_penalty = -50.0
         self.time_penalty = -0.001
         self.waypoint_completed_reward = 100.0
-        self.target_progress_reward = 20
+        self.target_progress_reward = 40
         self.progress_buffer_size = 3
 
         self.speed_reward_multiplier = 0.0005#0.01
@@ -38,19 +38,26 @@ class CarlaEnvVanilla(gym.Env):
             high=np.array([1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32
         )
-        
+        self.image_height = 64
+        self.image_width = 84
+        image_space = gym.spaces.Box(low=0, high=255, shape=(self.image_height, self.image_width, 3), dtype=np.uint8)
+
         # Define observation space with 6 continuous values:
-        # 1. Speed (0 to 50 km/h)
-        # 2. Lane offset (-10 to 10 meters from center)
-        # 3. Collision indicator (0 or 1)
-        # 4. Distance to target (0 to 200 meters)
-        # 5. Distance to waypoint (0 to 200 meters)
-        # 5. Direction to target (-π to π radians)
-        self.observation_space = gym.spaces.Box(
-            low = np.array([0.0,  -10.0, 0.0, 0.0, -np.pi], dtype=np.float32),
-            high = np.array([50.0, 10.0, 1.0, 200.0, np.pi], dtype=np.float32),
-            dtype = np.float32
-        )
+        # 1. Image
+        # 2. Speed (0 to 50 km/h)
+        # 3. Lane offset (-10 to 10 meters from center)
+        # 4. Collision indicator (0 or 1)
+        # 5. Distance to target (0 to 200 meters)
+        # 6. Distance to waypoint (0 to 200 meters)
+        # 7. Direction to target (-π to π radians)
+        self.observation_space = gym.spaces.Dict({
+            "image": image_space,
+            "speed": gym.spaces.Box(low=0, high=50, shape=(1,), dtype=np.float32),
+            "lane_offset": gym.spaces.Box(low=-10, high=10, shape=(1,), dtype=np.float32),
+            "collision": gym.spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
+            "distance_to_target": gym.spaces.Box(low=0, high=200, shape=(1,), dtype=np.float32),
+            "distance_to_waypoint": gym.spaces.Box(low=0, high=200, shape=(1,), dtype=np.float32),
+        })
         
         # Initialize vehicle and other CARLA objects
         self.vehicle = None
@@ -76,14 +83,14 @@ class CarlaEnvVanilla(gym.Env):
         right_vec = current_waypoint.transform.get_right_vector()
 
 
-
+        distance_to_waypoint = location.distance(lane_center)
         
         # Calculate lateral offset from lane center
         lane_offset = delta.x * right_vec.x + delta.y * right_vec.y
         
         # Calculate distance to final target
         distance_to_target = location.distance(self.target_location)
-        
+        collision_val = 1.0 if self.collision_occured else 0.0
         # Calculate angle to target
         target_direction = carla.Vector3D(
             x=self.target_location.x - location.x,
@@ -102,29 +109,26 @@ class CarlaEnvVanilla(gym.Env):
 
         target_dot = vehicle_forward.x * target_direction.x + vehicle_forward.y * target_direction.y
         target_dot = np.clip(target_dot, -1.0, 1.0)
-        target_angle = np.arccos(target_dot)
-        
-        # Determine sign of the angle (left or right of vehicle)
-        cross_product = vehicle_forward.x * target_direction.y - vehicle_forward.y * target_direction.x
-        if cross_product < 0:
-            target_angle = -target_angle
         
         # Calculate speed
         speed = np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) * 3.6  # km/h
         
-       # 1. Speed (0 to 50 km/h)
-        # 2. Lane offset (-10 to 10 meters from center)
-        # 3. Collision indicator (0 or 1)
-        # 4. Distance to target (0 to 200 meters)
-        # 5. Distance to waypoint (0 to 200 meters)
-        # 5. Direction to target (-π to π radians)
-        return np.array([
-            speed, 
-            lane_offset, 
-            self.collision_occured, 
-            distance_to_target, 
-            target_angle
-        ], dtype=np.float32)
+         # grab or zero‐fill the camera image
+        image = self.get_camera_image()
+        
+        if image is None:
+            image = np.zeros(self.observation_space["image"].shape, dtype=np.uint8)
+
+         # pack each scalar into a 1‐D array
+        return {
+             "image":               image,
+             "speed":               np.array([speed],               dtype=np.float32),
+             "lane_offset":         np.array([lane_offset],         dtype=np.float32),
+             "collision":           np.array([collision_val],        dtype=np.float32),
+             "distance_to_target":  np.array([distance_to_target],  dtype=np.float32),
+             "distance_to_waypoint":np.array([distance_to_waypoint],dtype=np.float32),
+         }
+    
 
     def updated_waypoints_reached(self, reward_components):
         """
@@ -147,7 +151,7 @@ class CarlaEnvVanilla(gym.Env):
             wp_distance = vehicle_location.distance(wp.transform.location)
             
             # If the vehicle is close enough to this waypoint and hasn't reached it before
-            if wp_distance < 1.0 and i not in self.reached_waypoints:  # 0.5 meters threshold
+            if wp_distance < 0.75 and i not in self.reached_waypoints:  # 0.5 meters threshold
                 # Mark this waypoint as reached
                 self.reached_waypoints.add(i)
                 self.most_recent_waypoint_reached = i
@@ -188,8 +192,7 @@ class CarlaEnvVanilla(gym.Env):
             float: Total reward
         """
         # Calculate normal reward from all components
-        reward = components["target_progress"] + components["waypoint_progress"] + components["speed_reward"]
-
+        reward = components["target_progress"] + components["waypoint_progress"] + components["speed_reward"] 
         self.cumulative_reward_components["target_progress"] += components["target_progress"]
         self.cumulative_reward_components["waypoint_progress"] += components["waypoint_progress"]
         self.cumulative_reward_components["speed_reward"] += components["speed_reward"]
@@ -212,15 +215,13 @@ class CarlaEnvVanilla(gym.Env):
 
     def step(self, action):
         self.current_step += 1
-      # Track cumulative reward components
+        # Track cumulative reward components
         reward_components = {
             "target_progress": 0.0,
             "waypoint_progress": 0.0,
-            "lane_departure_penalty": 0.0,  # Track actual penalty
-            "collision_penalty": 0.0,  # Track actual penalty
-            "speed_reward": 0.0,
-        }
-
+            "lane_departure_penalty": 0.0,
+            "collision_penalty": 0.0,
+            "speed_reward": 0.0        }
 
         # Execute action in CARLA
         if self.vehicle is not None:
@@ -235,7 +236,21 @@ class CarlaEnvVanilla(gym.Env):
 
         # Get new observation
         obs = self._get_obs()
-        speed, lane_offset, collision_occured, distance_to_target, target_angle = obs
+        #         self.observation_space = gym.spaces.Dict({
+        #     "image": image_space,
+        #     "speed": gym.spaces.Box(low=0, high=50, shape=(1,), dtype=np.float32),
+        #     "lane_offset": gym.spaces.Box(low=-10, high=10, shape=(1,), dtype=np.float32),
+        #     "collision": gym.spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
+        #     "distance_to_target": gym.spaces.Box(low=0, high=200, shape=(1,), dtype=np.float32),
+        #     "distance_to_waypoint": gym.spaces.Box(low=0, high=200, shape=(1,), dtype=np.float32),
+        #     "target_angle": gym.spaces.Box(low=-np.pi, high=np.pi, shape=(1,), dtype=np.float32),
+        # })
+
+        image = obs["image"]
+        speed = float(obs["speed"])
+        lane_offset = float(obs["lane_offset"])
+        distance_to_target = float(obs["distance_to_target"])
+        distance_to_waypoint = float(obs["distance_to_waypoint"])
         
         # Update waypoint index and get new distance
         self.updated_waypoints_reached(reward_components)
@@ -259,18 +274,18 @@ class CarlaEnvVanilla(gym.Env):
             self.lane_departures += 1
         
         reward_components["lane_departure_penalty"] = lane_departure
-        reward_components["collision_penalty"] = collision_occured
+        reward_components["collision_penalty"] = self.collision_occured
         
         # Check for episode end conditions
         route_complete = distance_to_target < 1.0
-        
+                
         # Calculate total reward
         reward = self._calculate_total_reward(reward_components)
 
         self.cumulative_reward += reward
         
-        stuck = self.current_step > self.stuck_steps and speed < 1.0
-        terminated = bool(collision_occured or route_complete or stuck)
+        truncated = (self.current_step > self.stuck_steps and speed < 1.0) or self.current_step > self.max_steps
+        terminated = bool(self.collision_occured or route_complete)
 
 
         # Create info dictionary with all reward components and other data
@@ -279,12 +294,11 @@ class CarlaEnvVanilla(gym.Env):
             
             "lane_offset": lane_offset,
             "lane_departures": self.lane_departures,
-            "collision": collision_occured,
+            "collision": self.collision_occured,
             "throttle": float(action[1]),
             "brake": float(action[2]),
             "steer": float(action[0]),
             "distance_to_target": distance_to_target,
-            "target_angle": target_angle,
             "route_complete": route_complete,
             # "stuck": stuck,
             "total_reward": reward,
@@ -299,7 +313,7 @@ class CarlaEnvVanilla(gym.Env):
         
         
         # Display episode information in 3D world when episode ends
-        if terminated:
+        if terminated or truncated:
             # Reset the flag first to ensure we can show a summary for this episode
             self.episode_summary_displayed = False
             
@@ -308,7 +322,7 @@ class CarlaEnvVanilla(gym.Env):
             self.draw_waypoints(life_time=1.0, episode_info=info)
             
 
-        return obs, reward, terminated, False, info
+        return obs, reward, terminated, truncated, info
     
 
     def reset(self, seed=None, options=None):
@@ -338,10 +352,10 @@ class CarlaEnvVanilla(gym.Env):
             "target_progress": 0.0,
             "waypoint_progress": 0.0,
             "speed_reward": 0.0,
-            "lane_departure_count": 0,  # Track count separately
-            "lane_departure_penalty": 0.0,  # Track actual penalty
-            "collision_count": 0,  # Track count separately
-            "collision_penalty": 0.0,  # Track actual penalty
+            "lane_departure_count": 0,
+            "lane_departure_penalty": 0.0,
+            "collision_count": 0,
+            "collision_penalty": 0.0,
             "time_penalty": 0.0,
         }
         
@@ -413,7 +427,7 @@ class CarlaEnvVanilla(gym.Env):
 
 
         self.route = []
-        step_size = 1.0  # meters
+        step_size = 1.5  # meters
         distance = self.target_location.x - spawn_loc.x  # assuming +X only
         num_steps = int(distance / step_size)
 
@@ -468,8 +482,8 @@ class CarlaEnvVanilla(gym.Env):
         camera_bp = blueprint_library.find('sensor.camera.rgb')
         
         # Set camera attributes
-        camera_bp.set_attribute('image_size_x', '800')
-        camera_bp.set_attribute('image_size_y', '600')
+        camera_bp.set_attribute('image_size_x', str(self.image_width))  # Smaller size
+        camera_bp.set_attribute('image_size_y', str(self.image_height))  # Smaller size
         camera_bp.set_attribute('fov', '90')
         
         # Set camera location relative to vehicle
@@ -484,6 +498,7 @@ class CarlaEnvVanilla(gym.Env):
         self.camera_image = None
         
         def _process_camera_image(image):
+            # print(f"Processing camera image: {image.height}x{image.width}")
             array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
             array = np.reshape(array, (image.height, image.width, 4))
             array = array[:, :, :3]  # Remove alpha channel
@@ -621,7 +636,6 @@ class CarlaEnvVanilla(gym.Env):
             
             episode_text += f"Time Penalty: {self.cumulative_reward_components['time_penalty']:.2f}\n"
             episode_text += f"Distance to target: {episode_info['distance_to_target']:.2f}\n"
-                                    
             # Draw the consolidated text
             self.world.debug.draw_string(
                 text_loc,
@@ -635,5 +649,7 @@ class CarlaEnvVanilla(gym.Env):
             
         except Exception as e:
             print(f"Error displaying episode text: {e}")
+
+
 
 

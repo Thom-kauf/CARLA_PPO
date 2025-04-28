@@ -3,7 +3,6 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.env_checker import check_env
-import torch
 import os
 
 from carla_envs import CarlaEnvVanilla#, AnxiousCarlaEnv
@@ -12,6 +11,85 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import gym
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+
+import torch
+import torch.nn as nn
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+import numpy as np
+import gymnasium as gym
+from PIL import Image
+from datetime import datetime
+import time
+
+class CustomCombinedExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space: gym.spaces.Dict, features_dim: int = 256):
+        super().__init__(observation_space, features_dim)
+        
+        # Correctly interpret image dimensions: (C, H, W)
+        image_shape = observation_space["image"].shape
+        self.image_channels = image_shape[0]
+        self.image_height = image_shape[1]
+        self.image_width = image_shape[2]
+        
+        # CNN for image processing
+        self.cnn = nn.Sequential(
+            nn.Conv2d(self.image_channels, 16, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        
+        # Compute CNN output size
+        with torch.no_grad():
+            sample_image = torch.zeros(1, self.image_channels, self.image_height, self.image_width)
+            n_flatten = self.cnn(sample_image).shape[1]
+        
+        # Vector input processing
+        self.vector_size = sum(
+            int(np.prod(space.shape))
+            for key, space in observation_space.items()
+            if key != "image"
+        )
+        
+        self.vector_mlp = nn.Sequential(
+            nn.Linear(self.vector_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+        )
+        
+        # Combine features
+        self.final_layer = nn.Sequential(
+            nn.Linear(n_flatten + 128, features_dim),
+            nn.ReLU(),
+        )
+
+    def forward(self, observations) -> torch.Tensor:
+
+        # Process image
+        image = observations["image"] / 255.0  # Normalize to [0, 1]
+        cnn_features = self.cnn(image)
+
+        # Process vector observations
+        vector_input = torch.cat([
+            observations[key].reshape(observations[key].shape[0], -1)
+            for key in observations.keys()
+            if key != "image"
+        ], dim=1)
+        vector_features = self.vector_mlp(vector_input)
+
+        # Combine and output
+        combined = torch.cat([cnn_features, vector_features], dim=1)
+        return self.final_layer(combined)
+
+
 
 
 
@@ -49,11 +127,13 @@ def main():
 
     # Define policy kwargs for tanh activation and optimized architecture
     policy_kwargs = dict(
-        activation_fn=torch.nn.Tanh,
+        features_extractor_class=CustomCombinedExtractor,
+        features_extractor_kwargs=dict(features_dim=256),
         net_arch=dict(
-            pi=[256, 256],  # Larger policy network
-            vf=[256, 256]   # Larger value network
+            pi=[64, 64],  # Larger policy network
+            vf=[64, 64]   # Larger value network
         ),
+        activation_fn=torch.nn.Tanh,
         ortho_init=True
     )
 
@@ -67,19 +147,19 @@ def main():
         print("creating new model")
         
         model = PPO(
-            "MlpPolicy",
+            "MultiInputPolicy",
             env,
             verbose=1,
             clip_range_vf=0.2,
             vf_coef=0.5,
-            learning_rate=2e-4,
-            n_steps=4096,          # Increased for better learning
-            batch_size=512,
+            learning_rate=5e-4,
+            n_steps=1024,          # Increased for better learning
+            batch_size=64,
             n_epochs=10,
             gamma=0.98,#0.99            # Standard discount factor
             gae_lambda=0.95,       # GAE lambda parameter
-            clip_range=0.1,        # Standard PPO clip range
-            ent_coef=0.03,         
+            clip_range=0.2,        # Standard PPO clip range
+            ent_coef=0.05,         
             policy_kwargs=policy_kwargs,
             device='cpu'
         )
@@ -120,10 +200,15 @@ def main():
         
 
     plot_callback = PlotRewardCallback(save_freq=50_000, save_dir=reward_dir)
+    # Create the image saving callback
+
+
     # Combine callbacks
     callback_list = CallbackList([checkpoint_callback, plot_callback])
 
     print("starting training")
+    # Verify observation pipeline
+
     # Train the model with checkpoint and plotting callbacks
     model.learn(total_timesteps=args.timesteps, callback=callback_list)
 
