@@ -1,0 +1,7 @@
+Summary Statistics:
+Total Episodes: 10
+Route Completion Rate: 0.0%
+Collision Rate: 100.0%
+Average Final Distance to Target: 50.45m
+Average Episode Reward: -222.69
+Average Lane Departures: 2007.10

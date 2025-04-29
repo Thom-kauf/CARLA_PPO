@@ -57,9 +57,9 @@ def main():
         ortho_init=True
     )
 
-    if args.load_model and os.path.exists(args.load_model):
+    if args.load_model and os.path.exists(os.path.join('training', mode, 'models', args.load_model)):
         print(f"Loading existing model from {args.load_model}")
-        model = PPO.load(args.load_model, env=env, device='cpu')
+        model = PPO.load(os.path.join('training', mode, 'models', args.load_model), env=env, device='cpu')
         # Update learning rate and other parameters
         model.learning_rate = args.learning_rate
 
@@ -70,16 +70,14 @@ def main():
             "MlpPolicy",
             env,
             verbose=1,
-            clip_range_vf=0.2,
-            vf_coef=0.5,
-            learning_rate=2e-4,
-            n_steps=4096,          # Increased for better learning
-            batch_size=512,
+            learning_rate=1e-3,
+            n_steps=2048,          # Increased for better learning
+            batch_size=128,
             n_epochs=10,
-            gamma=0.98,#0.99            # Standard discount factor
+            gamma=0.99,#0.99            # Standard discount factor
             gae_lambda=0.95,       # GAE lambda parameter
-            clip_range=0.1,        # Standard PPO clip range
-            ent_coef=0.03,         
+            clip_range=0.2,        # Standard PPO clip range
+            ent_coef=0.01,         
             policy_kwargs=policy_kwargs,
             device='cpu'
         )

@@ -1,13 +1,11 @@
 import gymnasium as gym
 import numpy as np
 import carla
-import pygame
 import os
 from stable_baselines3 import PPO
 import matplotlib.pyplot as plt
 import argparse
-import cv2
-from carla_envs import CarlaEnvVanilla#, AnxiousCarlaEnv
+from carla_envs import CarlaEnvVanilla
 
 print("=== CARLA Visualization Script ===")
 print("Checking if CARLA is running...")
@@ -25,7 +23,6 @@ except Exception as e:
 
 
 def generate_visualizations(collision_list, lane_departure_list, completion_rate_list, distance_list, reward_list, progress_list, speed_list, filepath):
-
     # Create a figure for the reward breakdown
     plt.figure(figsize=(10, 5))
     plt.plot(reward_list)
@@ -97,65 +94,60 @@ def generate_visualizations(collision_list, lane_departure_list, completion_rate
         f.write(f"Average Lane Departures: {sum(lane_departure_list)/len(lane_departure_list):.2f}\n")
 
 
-
-
 def visualize():
     print("\n=== Starting Visualization ===")
-    
-    # Initialize pygame for visualization
-    try:
-        pygame.init()
-        print("✓ Pygame initialized")
-    except Exception as e:
-        print(f"✗ Error initializing pygame: {e}")
-        return
-    
-    # Create a single window with space for both camera and metrics
-    try:
-        WINDOW_WIDTH = 1200  # 800 for camera + 400 for metrics
-        WINDOW_HEIGHT = 600
-        display = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("CARLA Visualization - Trained Model")
-        print(f"✓ Window created: {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-    except Exception as e:
-        print(f"✗ Error creating window: {e}")
-        return
-
-    font = pygame.font.Font(None, 36)
-    print("✓ Font loaded")
 
     # Create environment
     try:
         print("Attempting to create CARLA environment...")
         parser = argparse.ArgumentParser()
-        parser.add_argument('--anxious', action='store_true',
-                            help='Use AnxiousCarlaEnv instead of CarlaEnv')
-        parser.add_argument('--model_path', type=str, default="ppo_carla",
-                          help='Path to load the trained model (without .zip extension)')
-        parser.add_argument('--record', action='store_true',
-                          help='Record the visualization to a video file')
+        parser.add_argument('--model_path', type=str, required=True,
+                          help='Name of the model file (e.g., ppo_checkpoint_1400000_steps)')
         parser.add_argument('--subfolder', type=str, required=True,
                         help='Subfolder within ./visualizations to save outputs')
-        parser.add_argument('--video_name', type=str, default='visualization.avi',
-                        help='Name of the video file to save')
+        parser.add_argument('--num_episodes', type=int, default=10,
+                        help='Number of episodes to run')
+        parser.add_argument('--mode', type=str, required=True)
         args = parser.parse_args()
-        env_class = AnxiousCarlaEnv if args.anxious else CarlaEnvVanilla
-        env = env_class()
+        env = CarlaEnvVanilla()
         print("✓ Environment created")
     except Exception as e:
         print(f"✗ Error creating environment: {e}")
-        pygame.quit()
         return
     
     # Load the trained model
     try:
         print("Attempting to load trained model...")
-        model = PPO.load(args.model_path, env=env, device='cpu')  # Explicitly set device to CPU
-        print("✓ Model loaded successfully")
+        # Define the models directory path
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        if args.mode == "vanilla":
+            models_dir = os.path.join(script_dir, "training", "vanilla", "models")
+        elif args.mode == "anxious":
+            models_dir = os.path.join(script_dir, "training", "anxious", "models")
+        
+        # Construct full model path
+        model_name = args.model_path
+        if not model_name.endswith('.zip'):
+            model_name += '.zip'
+        model_path = os.path.join(models_dir, model_name)
+        
+        if not os.path.exists(model_path):
+            print(f"Model file not found at: {model_path}")
+            print("\nAvailable models:")
+            try:
+                for file in os.listdir(models_dir):
+                    if file.endswith('.zip'):
+                        print(f"  {file[:-4]}")  # Print without .zip extension
+            except Exception as e:
+                print(f"Could not list models: {e}")
+            return
+            
+        model = PPO.load(model_path, env=env, device='cpu')  # Explicitly set device to CPU
+        print(f"✓ Model loaded successfully from: {model_path}")
     except Exception as e:
         print(f"✗ Error loading model: {e}")
         print("Exiting visualization - trained model required")
-        pygame.quit()
         env.close()
         return
 
@@ -165,7 +157,6 @@ def visualize():
         print("✓ Environment reset")
     except Exception as e:
         print(f"✗ Error resetting environment: {e}")
-        pygame.quit()
         env.close()
         return
 
@@ -174,10 +165,9 @@ def visualize():
     
     # Track trial information
     current_trial = 0
-    num_trials = 10
+    num_trials = args.num_episodes
     steps_in_current_trial = 0
     max_steps_per_trial = 10_000
-    
     
     collision_list = []
     lane_departure_list = []
@@ -191,26 +181,24 @@ def visualize():
     total_episode_progress = 0
     episode_speeds = []
 
-    # Construct the full output directory path
-    output_dir = os.path.join('.\\visualizations', args.subfolder)
 
-    # Set up video recording if --record is passed
-    if args.record:
-        video_file_path = os.path.join(output_dir, args.video_name)
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        video_out = cv2.VideoWriter(video_file_path, fourcc, 30.0, (WINDOW_WIDTH, WINDOW_HEIGHT))
+    if args.mode == "vanilla":
+        output_dir = os.path.join("visualizations", "vanilla")
+    elif args.mode == "anxious":
+        output_dir = os.path.join("visualizations", "anxious")
+    
+    # Construct full model path
+    model_name = args.model_path
+    if not model_name.endswith('.zip'):
+        model_name += '.zip'
+    model_path = os.path.join(models_dir, model_name)
+
 
     # Create visualizations directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
     while running and current_trial < num_trials:
         try:
-            # Process pygame events
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                    print("Quit event received")
-
             # Get action from trained model
             action, _ = model.predict(obs, deterministic=True)
             # Step environment
@@ -218,55 +206,13 @@ def visualize():
 
             # Track metrics
             total_episode_reward += reward
-            total_episode_progress += info.get('immediate_progress', 0)
+            total_episode_progress += info.get('target_progress', 0)  # Updated to match environment
             episode_speeds.append(info.get('speed', 0))
             steps_in_current_trial += 1
             
-            # Clear the display
-            display.fill((0, 0, 0))
-            
-            # Get and display camera image
-            camera_img = env.get_camera_image()
-            if camera_img is not None:
-                try:
-                    # Convert to pygame surface and display
-                    camera_img = np.swapaxes(camera_img, 0, 1)
-                    pygame_surface = pygame.surfarray.make_surface(camera_img)
-                    display.blit(pygame_surface, (0, 0))  # Camera view on the left
-                except Exception as e:
-                    print(f"Error displaying camera image: {e}")
-            
-            # Render metrics (on the right side)
-            metrics = [
-                f"Trial: {current_trial + 1}/{num_trials}",
-                f"Steps: {steps_in_current_trial}",
-                f"Speed: {info['speed']:.2f} km/h",
-                f"Lane Offset: {info['lane_offset']:.2f} m",
-                f"Distance to Target: {info['distance_to_target']:.2f} m",
-                # f"Immediate Progress: {info.get('immediate_progress', 0):.3f} m",
-                # f"Average Progress: {info.get('average_progress', 0):.3f} m",
-                # f"Total Buffer Progress: {info.get('total_buffer_progress', 0):.3f} m",
-                # f"Total Progress: {100 - :.3f} m",
-                f"Target Angle: {np.degrees(info['target_angle']):.1f}°",
-                f"Waypoint Reached: {info['waypoint_reached']}",
-                f"Distance to Waypoint: {info['distance to waypoint']:.2f} m",
-                f"Throttle: {info['throttle']:.2f}",
-
-                f"Brake: {round(info['brake'] if info['throttle'] < 0.1 else 0.0, 2)}",
-                f"Steering: {info['steer']:.2f}",
-                f"Total Episode Reward: {total_episode_reward:.2f}"
-            ]
-            
-            for i, metric in enumerate(metrics):
-                text = font.render(metric, True, (255, 255, 255))
-                display.blit(text, (820, 10 + i * 30))  # Metrics start at x=820
-            
 
 
-
-
-
-            # Draw waypoints if available
+            # Draw waypoints
             try:
                 # Draw the reference waypoint
                 if hasattr(env, 'reference_waypoint'):
@@ -286,65 +232,25 @@ def visualize():
                         life_time=0.1
                     )
                 
-                # Draw intermediate route waypoints if available
+                # Draw intermediate route waypoints
                 if hasattr(env, 'route'):
-                    for wp in env.route:
+                    for i, wp in enumerate(env.route):
+                        # Color reached waypoints yellow, unreached ones blue
+                        color = carla.Color(r=255, g=255, b=0) if i in env.reached_waypoints else carla.Color(r=0, g=0, b=255)
+                        size = 0.2 if i in env.reached_waypoints else 0.1
                         world.debug.draw_point(
                             wp.transform.location,
-                            size=0.1,
-                            color=carla.Color(r=0, g=0, b=255),  # blue
+                            size=size,
+                            color=color,
                             life_time=0.1
                         )
 
             except Exception as e:
                 print(f"Error drawing waypoints: {e}")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-            pygame.display.flip()
-
-            # Capture the frame from the Pygame window if recording
-            if args.record:
-                frame = np.array(pygame.surfarray.array3d(display))
-                frame = np.transpose(frame, (1, 0, 2))  # Transpose to match OpenCV format
-                video_out.write(frame)
-
             # Check if we should start a new trial
             if terminated or truncated or (steps_in_current_trial >= max_steps_per_trial):
-                print(f"Trial {current_trial + 1} ended. Steps: {steps_in_current_trial}")
+                print(f"\nTrial {current_trial + 1} ended. Steps: {steps_in_current_trial}")
                 print(f"  Final distance: {info['distance_to_target']:.2f}m")
                 print(f"  Total progress: {total_episode_progress:.2f}m")
                 print(f"  Total reward: {total_episode_reward:.2f}")
@@ -371,11 +277,6 @@ def visualize():
             print(f"Error in main loop: {e}")
             running = False
 
-    # Release the video writer if recording
-    if args.record:
-        video_out.release()
-        print(f"Video saved to: {video_file_path}")
-
     # Generate visualizations with proper path joining
     generate_visualizations(
         collision_list, 
@@ -391,7 +292,6 @@ def visualize():
     print("Visualizations saved to:", output_dir)
 
     print("\n=== Cleaning Up ===")
-    pygame.quit()
     env.close()
     print(f"Visualization ended after {current_trial} trials")
 

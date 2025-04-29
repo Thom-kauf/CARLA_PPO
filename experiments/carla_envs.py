@@ -10,17 +10,15 @@ class CarlaEnvVanilla(gym.Env):
         super(CarlaEnvVanilla, self).__init__()
         
         # Settings
-        self.lane_departure_penalty = -0.01#-0.005
-        self.collision_penalty = -1500.0
-        self.time_penalty = -0.001
+        self.lane_departure_penalty = -0.05#-0.005
+        self.collision_penalty = -100.0
         self.waypoint_completed_reward = 100.0
-        self.target_progress_reward = 20
-        self.progress_buffer_size = 3
+        self.target_progress_reward = 50
+        self.lane_offset_penalty = -0.01
+        self.progress_buffer_size = 2
 
-        self.speed_reward_multiplier = 0.0005#0.01
+        self.route_completed_reward = 200.0
 
-
-        self.max_speed_reward = self.speed_reward_multiplier * 50.0
         self.stuck_steps = 5_000
 
 
@@ -34,7 +32,7 @@ class CarlaEnvVanilla(gym.Env):
 
         # Define action space (steering, throttle, brake)
         self.action_space = gym.spaces.Box(
-            low=np.array([-1.0, 0.0, 0.0], dtype=np.float32),  # steering, throttle, brake
+            low=np.array([-1.0, -1.0, -1.0], dtype=np.float32),  # steering, throttle, brake
             high=np.array([1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32
         )
@@ -46,9 +44,10 @@ class CarlaEnvVanilla(gym.Env):
         # 4. Distance to target (0 to 200 meters)
         # 5. Distance to waypoint (0 to 200 meters)
         # 5. Direction to target (-π to π radians)
+        # 6. Direction to waypoint (-π to π radians)
         self.observation_space = gym.spaces.Box(
-            low = np.array([0.0,  -10.0, 0.0, 0.0, -np.pi], dtype=np.float32),
-            high = np.array([50.0, 10.0, 1.0, 200.0, np.pi], dtype=np.float32),
+            low = np.array([0.0,  -10.0, 0.0, 0.0,  0.0, -np.pi, -np.pi], dtype=np.float32),
+            high = np.array([50.0, 10.0, 1.0, 200.0, 200.0, np.pi, np.pi], dtype=np.float32),
             dtype = np.float32
         )
         
@@ -67,8 +66,21 @@ class CarlaEnvVanilla(gym.Env):
         velocity = self.vehicle.get_velocity()
         location = transform.location
         
-        # Get the current waypoint target
-        current_waypoint = self.route[self.most_recent_waypoint_reached]
+        # Get the current waypoint target - find the closest waypoint ahead of the vehicle
+        current_waypoint = None
+        curr_wp_idx = 0
+        min_distance = float('inf')
+        for i in range(self.most_recent_waypoint_reached + 1, len(self.route)):
+            wp = self.route[i]
+            distance = location.distance(wp.transform.location)
+            if distance < min_distance:
+                min_distance = distance
+                current_waypoint = wp
+                curr_wp_idx = i
+        if current_waypoint is None:
+            current_waypoint = self.route[-1]  # Fallback to last waypoint if none found
+            curr_wp_idx = len(self.route) - 1
+
         
         # Calculate lane information
         lane_center = current_waypoint.transform.location
@@ -83,6 +95,7 @@ class CarlaEnvVanilla(gym.Env):
         
         # Calculate distance to final target
         distance_to_target = location.distance(self.target_location)
+        distance_to_waypoint = location.distance(current_waypoint.transform.location)
         
         # Calculate angle to target
         target_direction = carla.Vector3D(
@@ -97,8 +110,38 @@ class CarlaEnvVanilla(gym.Env):
             target_direction.x /= target_length
             target_direction.y /= target_length
         
+        # Calculate direction to waypoint
+        waypoint_direction = carla.Vector3D(
+            x=current_waypoint.transform.location.x - location.x,
+            y=current_waypoint.transform.location.y - location.y,
+            z=0
+        )
+        
+
+        
+        
+
         # Calculate angle between vehicle direction and target direction
         vehicle_forward = transform.get_forward_vector()
+
+        # Normalize waypoint direction vector
+        waypoint_length = np.sqrt(waypoint_direction.x**2 + waypoint_direction.y**2)
+        if waypoint_length > 0:
+            waypoint_direction.x /= waypoint_length
+            waypoint_direction.y /= waypoint_length
+            
+        # Calculate angle between vehicle direction and waypoint direction
+        waypoint_dot = vehicle_forward.x * waypoint_direction.x + vehicle_forward.y * waypoint_direction.y
+        waypoint_dot = np.clip(waypoint_dot, -1.0, 1.0)
+        waypoint_angle = np.arccos(waypoint_dot)
+        
+        # Determine sign of the angle (left or right of vehicle)
+        waypoint_cross = vehicle_forward.x * waypoint_direction.y - vehicle_forward.y * waypoint_direction.x
+        if waypoint_cross < 0:
+            waypoint_angle = -waypoint_angle
+
+        # print(f"Waypoint angle: {waypoint_angle}")
+        # print(f"Current waypoint: {curr_wp_idx}, distance: {distance_to_waypoint}, angle: {waypoint_angle}")
 
         target_dot = vehicle_forward.x * target_direction.x + vehicle_forward.y * target_direction.y
         target_dot = np.clip(target_dot, -1.0, 1.0)
@@ -123,7 +166,9 @@ class CarlaEnvVanilla(gym.Env):
             lane_offset, 
             self.collision_occured, 
             distance_to_target, 
-            target_angle
+            distance_to_waypoint,
+            target_angle,
+            waypoint_angle
         ], dtype=np.float32)
 
     def updated_waypoints_reached(self, reward_components):
@@ -145,9 +190,10 @@ class CarlaEnvVanilla(gym.Env):
         # This allows the agent to get credit for any waypoint it passes near
         for i, wp in enumerate(self.route):
             wp_distance = vehicle_location.distance(wp.transform.location)
+            # print(f"Waypoint {i} distance: {wp_distance}")
             
             # If the vehicle is close enough to this waypoint and hasn't reached it before
-            if wp_distance < 1.0 and i not in self.reached_waypoints:  # 0.5 meters threshold
+            if wp_distance < 1.0 and ( i not in self.reached_waypoints) and (i > max(self.reached_waypoints) if self.reached_waypoints else 0):  # 0.5 meters threshold
                 # Mark this waypoint as reached
                 self.reached_waypoints.add(i)
                 self.most_recent_waypoint_reached = i
@@ -155,8 +201,6 @@ class CarlaEnvVanilla(gym.Env):
                 print(f"Waypoint {i} reached")
                 reward_components["waypoint_progress"] +=  self.waypoint_completed_reward * 2 if i < 5 else self.waypoint_completed_reward
 
-    def calculate_speed_reward(self, speed):   
-        return min(self.speed_reward_multiplier * speed, self.max_speed_reward)
         
     def _calculate_target_progress_reward(self, current_distance):
         """
@@ -176,6 +220,24 @@ class CarlaEnvVanilla(gym.Env):
 
         return 0.0
 
+    def _calculate_lane_offset_penalty(self, lane_offset):
+        """
+        Calculate penalty based on lane offset.
+        
+        Args:
+            lane_offset (float): Current lane offset from center
+            
+        Returns:
+            float: Penalty value based on lane offset
+        """
+
+
+        if abs(lane_offset) > 0.15:
+            # print(f"Lane offset: {lane_offset}")
+            return abs(lane_offset) * self.lane_offset_penalty
+        else:
+            return 0.0
+
 
     def _calculate_total_reward(self, components):
         """
@@ -188,59 +250,58 @@ class CarlaEnvVanilla(gym.Env):
             float: Total reward
         """
         # Calculate normal reward from all components
-        reward = components["target_progress"] + components["waypoint_progress"] + components["speed_reward"]
-
+        reward = components["target_progress"] + components["waypoint_progress"] #+ components["lane_departure_penalty"] 
         self.cumulative_reward_components["target_progress"] += components["target_progress"]
         self.cumulative_reward_components["waypoint_progress"] += components["waypoint_progress"]
-        self.cumulative_reward_components["speed_reward"] += components["speed_reward"]
+        # self.cumulative_reward_components["lane_departure_penalty"] += components["lane_departure_penalty"]
         
+
         if components["collision_penalty"]:
             reward += self.collision_penalty
             self.cumulative_reward_components["collision_count"] += 1
             self.cumulative_reward_components["collision_penalty"] += self.collision_penalty
-        if components["lane_departure_penalty"]:
+
+        if self.lane_departure:
             reward += self.lane_departure_penalty
-            self.cumulative_reward_components["lane_departure_count"] += 1
             self.cumulative_reward_components["lane_departure_penalty"] += self.lane_departure_penalty
 
-        #time penalty
-        reward += self.time_penalty
-        # print(f"Per step reward: {reward}")
-        self.cumulative_reward_components["time_penalty"] += self.time_penalty
+        # Add route completion bonus if route is complete
+        if components.get("route_complete", False):
+            reward += self.route_completed_reward
+            self.cumulative_reward_components["route_completion_bonus"] = self.route_completed_reward
         
         return reward
 
     def step(self, action):
         self.current_step += 1
-      # Track cumulative reward components
+        # Track cumulative reward components
         reward_components = {
             "target_progress": 0.0,
             "waypoint_progress": 0.0,
             "lane_departure_penalty": 0.0,  # Track actual penalty
             "collision_penalty": 0.0,  # Track actual penalty
-            "speed_reward": 0.0,
+            "route_complete": False,  # Track route completion
         }
 
 
         # Execute action in CARLA
         if self.vehicle is not None:
             control = carla.VehicleControl()
-            control.steer = float(action[0])
-            control.throttle = float(action[1])
-            control.brake = float(action[2])
+            control.steer    = float(action[0])
+            control.throttle = float((action[1] + 1.0) / 2.0)
+            control.brake = float((action[2] + 1.0) / 2.0)
             self.vehicle.apply_control(control)
 
-        # Visualize waypoints during training
+        # # Visualize waypoints during training
         self.draw_waypoints()
 
         # Get new observation
         obs = self._get_obs()
-        speed, lane_offset, collision_occured, distance_to_target, target_angle = obs
+        speed, lane_offset, collision_occured, distance_to_target, distance_to_waypoint, target_angle, waypoint_angle = obs
         
         # Update waypoint index and get new distance
         self.updated_waypoints_reached(reward_components)
                     
-        reward_components["speed_reward"] += self.calculate_speed_reward(speed)
 
         # Update progress buffer
         self.progress_buffer.append(distance_to_target)
@@ -253,23 +314,32 @@ class CarlaEnvVanilla(gym.Env):
 
         
         # Lane departure detection
-        lane_departure = False
+        self.lane_departure = False
         if abs(lane_offset) > 2.0:
-            lane_departure = True
+            self.lane_departure = True
             self.lane_departures += 1
+            self.cumulative_reward_components["lane_departure_count"] += 1
+
+
+
+
+
         
-        reward_components["lane_departure_penalty"] = lane_departure
+        # reward_components["lane_departure_penalty"] = lane_departure
+        # reward_components["lane_departure_penalty"] += self._calculate_lane_offset_penalty(lane_offset)
+        
         reward_components["collision_penalty"] = collision_occured
         
         # Check for episode end conditions
         route_complete = distance_to_target < 1.0
+        reward_components["route_complete"] = route_complete
         
         # Calculate total reward
         reward = self._calculate_total_reward(reward_components)
 
         self.cumulative_reward += reward
         
-        stuck = self.current_step > self.stuck_steps and speed < 1.0
+        stuck = (self.current_step > self.stuck_steps and speed < 1.0) or distance_to_waypoint > 10
         terminated = bool(collision_occured or route_complete or stuck)
 
 
@@ -286,7 +356,7 @@ class CarlaEnvVanilla(gym.Env):
             "distance_to_target": distance_to_target,
             "target_angle": target_angle,
             "route_complete": route_complete,
-            # "stuck": stuck,
+            "stuck": stuck,
             "total_reward": reward,
             "cumulative_reward": self.cumulative_reward,
             "current_waypoint_idx": self.waypoint_index
@@ -307,9 +377,13 @@ class CarlaEnvVanilla(gym.Env):
             self.display_episode_text(info)
             self.draw_waypoints(life_time=1.0, episode_info=info)
             
+        # print(f"Action: {action}, Adjusted: {control.steer}, {control.throttle}, {control.brake}, Reward: {reward}")
 
         return obs, reward, terminated, False, info
     
+
+
+
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -319,6 +393,7 @@ class CarlaEnvVanilla(gym.Env):
         
         # Clean up previous episode
         self.cleanup()
+        self.lane_departure = False
 
         self.collision_occured = False
         self.current_step = 0
@@ -337,12 +412,11 @@ class CarlaEnvVanilla(gym.Env):
         self.cumulative_reward_components = {
             "target_progress": 0.0,
             "waypoint_progress": 0.0,
-            "speed_reward": 0.0,
             "lane_departure_count": 0,  # Track count separately
             "lane_departure_penalty": 0.0,  # Track actual penalty
             "collision_count": 0,  # Track count separately
             "collision_penalty": 0.0,  # Track actual penalty
-            "time_penalty": 0.0,
+            "route_completion_bonus": 0.0,  # Track route completion bonus
         }
         
         # Reset tracking variables
@@ -353,6 +427,7 @@ class CarlaEnvVanilla(gym.Env):
         # Reset waypoint counters
         self.total_waypoints_reached = 0
         self.reached_waypoints = set()
+        self.reached_waypoints.add(0)
         
         # Spawn new vehicle
         blueprint_library = self.world.get_blueprint_library()
@@ -394,7 +469,7 @@ class CarlaEnvVanilla(gym.Env):
 
         # Set target manually: 100 meters forward in +X direction
         self.target_location = carla.Location(
-            x=spawn_loc.x + 100.0,
+            x=spawn_loc.x + 50.0,
             y=spawn_loc.y,
             z=spawn_loc.z
         )
@@ -413,12 +488,12 @@ class CarlaEnvVanilla(gym.Env):
 
 
         self.route = []
-        step_size = 1.0  # meters
+        step_size = 2.5  # meters
         distance = self.target_location.x - spawn_loc.x  # assuming +X only
         num_steps = int(distance / step_size)
 
         for i in range(num_steps + 1):
-            x = spawn_loc.x + (i + 1) * step_size
+            x = spawn_loc.x + (i) * step_size
             manual_loc = carla.Location(x=x, y=spawn_loc.y, z=spawn_loc.z)
 
             wp = self.world.get_map().get_waypoint(
@@ -435,7 +510,7 @@ class CarlaEnvVanilla(gym.Env):
 
         # Add sensors
         self._add_collision_sensor()
-        self._add_camera_sensor()
+        # self._add_camera_sensor()
         
         # Get initial observation
         observation = self._get_obs()
@@ -606,7 +681,7 @@ class CarlaEnvVanilla(gym.Env):
             episode_text += "\nREWARD COMPONENTS:\n"
             episode_text += f"Target Progress: {self.cumulative_reward_components['target_progress']:.2f}\n"
             episode_text += f"Waypoint Progress: {self.cumulative_reward_components['waypoint_progress']:.2f}\n"
-            episode_text += f"Speed Reward: {self.cumulative_reward_components['speed_reward']:.2f}\n"
+            episode_text += f"Route Completion Bonus: {self.cumulative_reward_components['route_completion_bonus']:.2f}\n"
             # Show counts with penalties
             ld_count = int(self.cumulative_reward_components['lane_departure_count'])
             ld_penalty = self.cumulative_reward_components['lane_departure_penalty']
@@ -616,10 +691,8 @@ class CarlaEnvVanilla(gym.Env):
             coll_penalty = self.cumulative_reward_components['collision_penalty']
             episode_text += f"Collisions: {coll_count} (Penalty: {coll_penalty:.2f})\n"
             
-
             episode_text += f"Waypoints Reached: {self.total_waypoints_reached}\n"
             
-            episode_text += f"Time Penalty: {self.cumulative_reward_components['time_penalty']:.2f}\n"
             episode_text += f"Distance to target: {episode_info['distance_to_target']:.2f}\n"
                                     
             # Draw the consolidated text
