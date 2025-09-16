@@ -1,4 +1,4 @@
-If you want to learn more about this project, please [read the full paper here (PDF)](CARLA_PPO/CARLA_PPO_PAPER.pdf)
+If you want to learn more about this project, please [read the full paper here (PDF)](CARLA_PPO_PAPER.pdf)
 
 
 # CARLA PPO Repository Location
